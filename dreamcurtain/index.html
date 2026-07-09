@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>dreamcurtain</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #06080d;
+        --fg: #d9e0ea;
+        --muted: #8e98a8;
+        --frame: #111722;
+        --accent: #d85d47;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        overflow: hidden;
+        background:
+          radial-gradient(circle at top, rgba(216, 93, 71, 0.14), transparent 42%),
+          linear-gradient(180deg, #0b1018 0%, var(--bg) 55%);
+        color: var(--fg);
+        font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+      }
+
+      body {
+        display: grid;
+        place-items: center;
+      }
+
+      #viewport {
+        position: relative;
+        width: 100vw;
+        height: 100vh;
+        display: grid;
+        place-items: center;
+      }
+
+      #canvas-frame {
+        position: relative;
+        display: grid;
+        place-items: center;
+        background: #000;
+        box-shadow:
+          0 0 0 1px rgba(255, 255, 255, 0.06),
+          0 24px 80px rgba(0, 0, 0, 0.45);
+      }
+
+      #canvas {
+        display: block;
+        width: 100%;
+        height: 100%;
+        border: 0;
+        outline: none;
+        background: #000;
+      }
+
+      #loading {
+        position: absolute;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        background: rgba(6, 8, 13, 0.72);
+        backdrop-filter: blur(6px);
+        transition: opacity 160ms ease;
+      }
+
+      #loading.hidden {
+        opacity: 0;
+        pointer-events: none;
+      }
+
+      #loading-card {
+        min-width: min(24rem, calc(100vw - 2rem));
+        padding: 1rem 1.1rem;
+        border: 1px solid rgba(255, 255, 255, 0.09);
+        background: rgba(17, 23, 34, 0.88);
+      }
+
+      #loading-title {
+        margin: 0 0 0.35rem;
+        font-size: 0.95rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+
+      #status {
+        margin: 0;
+        font-size: 1rem;
+      }
+
+      #progress-track {
+        margin-top: 0.75rem;
+        width: 100%;
+        height: 0.4rem;
+        background: rgba(255, 255, 255, 0.08);
+        overflow: hidden;
+      }
+
+      #progress-bar {
+        width: 0%;
+        height: 100%;
+        background: linear-gradient(90deg, var(--accent), #f0a45e);
+        transition: width 100ms linear;
+      }
+
+      #error {
+        position: absolute;
+        left: 1rem;
+        right: 1rem;
+        bottom: 1rem;
+        padding: 0.75rem 0.9rem;
+        border: 1px solid rgba(216, 93, 71, 0.45);
+        background: rgba(58, 18, 16, 0.92);
+        color: #ffd8d1;
+        font-size: 0.92rem;
+        display: none;
+      }
+
+      #error.visible {
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <main id="viewport">
+      <section id="canvas-frame" aria-label="dreamcurtain canvas">
+        <canvas id="canvas" oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
+        <div id="loading">
+          <div id="loading-card">
+            <p id="loading-title">dreamcurtain</p>
+            <p id="status">Downloading...</p>
+            <div id="progress-track" aria-hidden="true">
+              <div id="progress-bar"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+      <div id="error" role="alert"></div>
+    </main>
+
+    <script>
+      const canvas = document.getElementById('canvas');
+      const frame = document.getElementById('canvas-frame');
+      const loading = document.getElementById('loading');
+      const statusElement = document.getElementById('status');
+      const progressBar = document.getElementById('progress-bar');
+      const errorElement = document.getElementById('error');
+      const baseWidth = 1024;
+      const baseHeight = 768;
+
+      function resizeFrame() {
+        const viewportWidth = window.innerWidth || document.documentElement.clientWidth || baseWidth;
+        const viewportHeight = window.innerHeight || document.documentElement.clientHeight || baseHeight;
+        const scale = Math.min(viewportWidth / baseWidth, viewportHeight / baseHeight);
+        const width = Math.max(1, Math.floor(baseWidth * scale));
+        const height = Math.max(1, Math.floor(baseHeight * scale));
+        frame.style.width = `${width}px`;
+        frame.style.height = `${height}px`;
+      }
+
+      function showError(text) {
+        errorElement.textContent = text;
+        errorElement.classList.add('visible');
+      }
+
+      function formatError(prefix, detail) {
+        if (!detail) {
+          return prefix;
+        }
+        if (detail instanceof Error) {
+          return `${prefix}: ${detail.message}`;
+        }
+        if (typeof detail === 'object' && 'message' in detail && detail.message) {
+          return `${prefix}: ${detail.message}`;
+        }
+        return `${prefix}: ${String(detail)}`;
+      }
+
+      function setStatus(text) {
+        if (!setStatus.last) {
+          setStatus.last = { time: Date.now(), text: '' };
+        }
+        if (text === setStatus.last.text) {
+          return;
+        }
+        const progressMatch = text.match(/([^(]+)\((\d+(\.\d+)?)\/(\d+)\)/);
+        const now = Date.now();
+        if (progressMatch && now - setStatus.last.time < 30) {
+          return;
+        }
+        setStatus.last.time = now;
+        setStatus.last.text = text;
+
+        if (progressMatch) {
+          const label = progressMatch[1].trim();
+          const current = Number(progressMatch[2]);
+          const total = Number(progressMatch[4]);
+          statusElement.textContent = label || 'Loading...';
+          progressBar.style.width = total > 0 ? `${(current / total) * 100}%` : '0%';
+          return;
+        }
+
+        statusElement.textContent = text || 'Starting...';
+        if (!text || text === 'All downloads complete.') {
+          loading.classList.add('hidden');
+        }
+      }
+
+      resizeFrame();
+      window.addEventListener('resize', resizeFrame);
+
+      canvas.addEventListener('webglcontextlost', (event) => {
+        event.preventDefault();
+        showError('WebGL context lost. Reload the page to restart the app.');
+      });
+
+      var Module = {
+        print(...args) {
+          console.log(...args);
+        },
+        printErr(...args) {
+          console.error(...args);
+          showError(args.join(' '));
+        },
+        canvas,
+        setStatus,
+        totalDependencies: 0,
+        monitorRunDependencies(left) {
+          this.totalDependencies = Math.max(this.totalDependencies, left);
+          setStatus(
+            left
+              ? `Preparing... (${this.totalDependencies - left}/${this.totalDependencies})`
+              : 'All downloads complete.'
+          );
+        },
+        onAbort(what) {
+          const message = formatError('Runtime aborted', what);
+          console.error(message);
+          showError(message);
+          loading.classList.remove('hidden');
+          statusElement.textContent = 'Startup failed';
+          progressBar.style.width = '100%';
+        },
+        onRuntimeInitialized() {
+          loading.classList.add('hidden');
+        }
+      };
+
+      setStatus('Downloading...');
+      window.onerror = (message, source, lineno, colno, error) => {
+        const detail = error || message;
+        const formatted = formatError('Unhandled error', detail);
+        console.error(formatted, source, lineno, colno);
+        showError(formatted);
+        loading.classList.remove('hidden');
+        statusElement.textContent = 'Startup failed';
+      };
+      window.addEventListener('unhandledrejection', (event) => {
+        const message = formatError('Unhandled promise rejection', event.reason);
+        console.error(message);
+        showError(message);
+        loading.classList.remove('hidden');
+        statusElement.textContent = 'Startup failed';
+      });
+    </script>
+    <script async type="text/javascript" src="dreamcurtain_web.js"></script>
+    <!-- back-to-home overlay -->
+    <style>
+      #baketnk-back {
+        position: fixed; top: .75rem; left: .75rem; z-index: 9999;
+        font-family: 'Press Start 2P', monospace; font-size: 0.65rem;
+        color: #e8e8d0; background-color: rgba(15,15,26,.85);
+        border: 2px solid #e8e8d0; padding: .45rem .9rem;
+        text-decoration: none; letter-spacing: -0.5px;
+        transition: box-shadow 120ms ease, color 120ms ease;
+      }
+      #baketnk-back:hover {
+        color: #ff8c69; box-shadow: 3px 3px 0 rgba(255,99,71,.4);
+      }
+    </style>
+    <a id="baketnk-back" href="../">← Back</a>
+  </body>
+</html>
